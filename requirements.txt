@@ -2,6 +2,8 @@ adafruit-blinka
 adafruit-circuitpython-motor
 adafruit-circuitpython-pca9685
 adafruit-circuitpython-hcsr04
+adafruit-circuitpython-lsm6ds
+adafruit-circuitpython-lis3mdl
 yapf
 getch
 numpy
