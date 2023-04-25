@@ -7,3 +7,6 @@ adafruit-circuitpython-lis3mdl
 yapf
 getch
 numpy
+scipy
+matplotlib
+filterpy

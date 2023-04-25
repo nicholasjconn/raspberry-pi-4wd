@@ -131,3 +131,4 @@ dmypy.json
 # Application specific rules
 calibration.json
 tmp/
+.DS_Store
