@@ -10,3 +10,10 @@ numpy
 scipy
 matplotlib
 filterpy
+ipykernel
+jupyter
+joblib
+ipympl
+pandas
+nbformat
+plotly
