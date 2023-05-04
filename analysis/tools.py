@@ -242,7 +242,7 @@ class Location3d:
         return Location3d.get_rotation_from_mean_accelerometer(mean_accelerometer)
 
     @staticmethod
-    def get_rotation_from_mean_accelerometer(accelerometer_value):
+    def get_rotation_from_mean_accelerometer(accelerometer_value, as_rotation=True):
         assert len(accelerometer_value) == 3
         magnitude = np.linalg.norm(accelerometer_value)
 
@@ -252,11 +252,14 @@ class Location3d:
             error = angle.apply(accelerometer_value) - [0, 0, magnitude]
             return np.linalg.norm(error)
 
-        res = optimize.differential_evolution(_get_error, [(-np.pi, np.pi), (-np.pi/2, np.pi/2)])
+        res = optimize.differential_evolution(_get_error, [(-np.pi, np.pi), (-np.pi/2, np.pi/2)], tol=1e-5)
         if res.success == False:
             raise RuntimeError('Failed to find the rotation')
         pitch, roll = res.x
-        return R.from_euler('zyx', [0, pitch, roll], degrees=False)
+        if as_rotation:
+            return R.from_euler('zyx', [0, pitch, roll], degrees=False)
+        else:
+            return pitch, roll
 
 
 @dataclass
@@ -325,41 +328,39 @@ class Location3dUkf(Location3d):
         self.state_history.append(self.ukf.x.copy())
 
 
-def rotation_to_pitch_and_roll(rotation_list: list[R]) -> tuple[list[float], list[float], list[float]]:
+def rotation_to_pitch_and_roll(rotation_list: list[R]) -> tuple[list[float], list[float]]:
     """Convert a list of rotation objects to a list of pitch and roll angles
 
     Args:
         rotation_list (list[R]): List of rotation objects.
 
     Returns:
-        tuple[list[float], list[float], list[float]]: List of pitch, roll, and yaw angles.
+        tuple[list[float], list[float]]: List of pitch and roll angles.
     """
     # Calculate the pitch and roll list from the rotation object list
     euler_list = np.array([rotation.as_euler('xyz', degrees=False) for rotation in rotation_list])
     pitch_list = euler_list[:, 0]
     roll_list = euler_list[:, 1]
-    yaw_list = euler_list[:, 2]
-    return list(pitch_list), list(roll_list), list(yaw_list)
+    return list(pitch_list), list(roll_list)
 
 
-def angles_to_cartesian(pitch, roll, yaw) -> tuple[float, float, float]:
+def angles_to_cartesian(pitch, roll) -> tuple[float, float, float]:
     """Convert yaw, pitch, and roll angles to cartesian coordinates on a unit sphere
 
     Args:
         pitch (float): Pitch angle.
         roll (float): Roll angle.
-        yaw (float): Yaw angle.
 
     Returns:
         tuple[float, float, float]: The x, y, and z coordinates on the unit sphere.
     """
-    x = np.cos(yaw) * np.sin(pitch) - np.sin(yaw) * np.cos(pitch) * np.sin(roll)
-    y = np.sin(yaw) * np.sin(pitch) + np.cos(yaw) * np.cos(pitch) * np.sin(roll)
-    z = np.cos(pitch) * np.cos(roll)
+    x = -np.sin(pitch)
+    y = np.sin(roll) * np.cos(pitch)
+    z = np.cos(roll) * np.cos(pitch)
     return x, y, z
 
 
-def plot_rotations_on_sphere(pitch_list, roll_list, yaw_list, color_list):
+def plot_rotations_on_sphere(pitch_list, roll_list, color_list):
     """Visualize the paired pitch and roll angles on a sphere
 
     Args:
@@ -373,14 +374,14 @@ def plot_rotations_on_sphere(pitch_list, roll_list, yaw_list, color_list):
     roll = np.linspace(0, 2 * np.pi, 100)
     pitch, roll = np.meshgrid(pitch, roll)
     # Create the surface plot for the sphere
-    x, y, z = angles_to_cartesian(pitch, roll, 0)
+    x, y, z = angles_to_cartesian(pitch, roll)
     sphere = go.Surface(x=x, y=y, z=z, opacity=0.1, showscale=False, colorscale=[[0, 'blue'], [1, 'blue']])
 
     # Plot red points for each pitch and roll measurement and draw lines connecting them to the center
     points_x, points_y, points_z = [], [], []
     lines = []
-    for pitch, roll, yaw in zip(pitch_list, roll_list, yaw_list):
-        x_point, y_point, z_point = angles_to_cartesian(pitch, roll, yaw)
+    for pitch, roll in zip(pitch_list, roll_list):
+        x_point, y_point, z_point = angles_to_cartesian(pitch, roll)
         line = go.Scatter3d(
             x=[0, x_point], y=[0, y_point], z=[0, z_point],
             mode='lines',
@@ -400,7 +401,7 @@ def plot_rotations_on_sphere(pitch_list, roll_list, yaw_list, color_list):
     fig.show()
 
 
-def find_largest_gap(pitch_list, roll_list, yaw_list) -> tuple[float, float, float]:
+def find_largest_gap(pitch_list, roll_list) -> tuple[float, float, float]:
     """Find the angle that fills in the largest gap between all of the provided angles
 
     Args:
@@ -413,19 +414,19 @@ def find_largest_gap(pitch_list, roll_list, yaw_list) -> tuple[float, float, flo
     """
     # Calculate the pitch and roll list from the rotation object list
     points = np.array([
-        angles_to_cartesian(pitch, roll, yaw)
-        for pitch, roll, yaw in zip(pitch_list, roll_list, yaw_list)
+        angles_to_cartesian(pitch, roll)
+        for pitch, roll in zip(pitch_list, roll_list)
     ])
 
     def _get_loss(c):
         """ Calculate the loss, in search of the largest empty area defined by the new point at the center"""
-        new_roll, new_pitch, new_yaw = c
+        new_pitch, new_roll = c
         # Find the distance to the nearest point
-        smallest_distance = np.min(np.linalg.norm(points - angles_to_cartesian(new_pitch, new_roll, new_yaw), axis=1))
+        smallest_distance = np.min(np.linalg.norm(points - angles_to_cartesian(new_pitch, new_roll), axis=1))
         # We want to find the largest smallest distance, so I'm going to 1/smallest_distance for the loss function
         return 1/smallest_distance
 
     # Minimize the loss function using differential evolution
-    res = optimize.differential_evolution(_get_loss, [(0, 2*np.pi)]*3, tol=1e-6, popsize=100, maxiter=1000)
-    new_roll, new_pitch, new_yaw = res.x
-    return new_roll, new_pitch, new_yaw
+    res = optimize.differential_evolution(_get_loss, [(-np.pi, np.pi), (-np.pi/2, np.pi/2)], tol=1e-6)
+    new_pitch, new_roll = res.x
+    return new_pitch, new_roll
