@@ -135,10 +135,10 @@ def apply_calibration(accelerometer: np.ndarray, gyroscope: np.ndarray, temperat
     # Check if the accelerometer sensitivity is a single float (not an array)
     if isinstance(accelerometer_sensitivity, (float, np.floating)) or accelerometer_sensitivity.shape == (3,):
         # Apply the calibration to the accelerometer data using regular multiplication
-        accelerometer = accelerometer * accelerometer_sensitivity - accelerometer_offset
+        accelerometer = accelerometer_sensitivity * (accelerometer - accelerometer_offset)
     elif accelerometer_sensitivity.shape == (3, 3):
         # Apply the calibration to the accelerometer data using matrix multiplication
-        accelerometer = accelerometer @ accelerometer_sensitivity - accelerometer_offset
+        accelerometer = accelerometer_sensitivity @ (accelerometer - accelerometer_offset)
     else:
         raise ValueError('Invalid accelerometer sensitivity')
 
