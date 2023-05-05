@@ -104,6 +104,53 @@ def read_data_file(file_path: str,
     return accelerometer, gyroscope, sample_rate, temperature, temperature_sample_rate
 
 
+def apply_calibration(accelerometer: np.ndarray, gyroscope: np.ndarray, temperature: np.ndarray,
+                      calibration: dict) -> Tuple[np.ndarray, np.ndarray]:
+    """Apply calibration to the accelerometer and gyroscope data.
+
+    Args:
+        accelerometer (np.ndarray): Accelerometer data, a 2D array with shape (N, 3), where N is the number of samples.
+        gyroscope (np.ndarray): Gyroscope data, a 2D array with shape (N, 3), where N is the number of samples.
+        temperature (np.ndarray): Temperature data, a 1D array with shape (N,).
+
+    Returns:
+        Tuple[np.ndarray, np.ndarray]: Calibrated accelerometer and gyroscope data.
+    """
+    # Accelerometer calibration
+    if 'accelerometer_sensitivity' not in calibration:
+        raise ValueError('Accelerometer calibration parameters not found')
+    if 'accelerometer_offset' not in calibration:
+        raise ValueError('Accelerometer calibration parameters not found')
+    if 'gyroscope_offset' not in calibration:
+        raise ValueError('Gyroscope calibration parameters not found')
+    if 'gyroscope_temperature_slope' not in calibration:
+        raise ValueError('Gyroscope calibration parameters not found')
+
+    # Read in the calibration values, and check how to read in sensitivity (numpy vs float)
+    if isinstance(calibration['accelerometer_sensitivity'], (float, np.floating)):
+        accelerometer_sensitivity = calibration['accelerometer_sensitivity']
+    else:
+        accelerometer_sensitivity = np.array(calibration['accelerometer_sensitivity'])
+    accelerometer_offset = np.array(calibration['accelerometer_offset'])
+    # Check if the accelerometer sensitivity is a single float (not an array)
+    if isinstance(accelerometer_sensitivity, (float, np.floating)) or accelerometer_sensitivity.shape == (3,):
+        # Apply the calibration to the accelerometer data using regular multiplication
+        accelerometer = accelerometer * accelerometer_sensitivity - accelerometer_offset
+    elif accelerometer_sensitivity.shape == (3, 3):
+        # Apply the calibration to the accelerometer data using matrix multiplication
+        accelerometer = accelerometer @ accelerometer_sensitivity - accelerometer_offset
+    else:
+        raise ValueError('Invalid accelerometer sensitivity')
+
+    # Apply gyroscope calibration
+    gyroscope_offset = np.array(calibration['gyroscope_offset'])
+    gyroscope_temperature_slope = np.array(calibration['gyroscope_temperature_slope'])
+    # TODO apply temperature on a sample-by-sample basis
+    gyroscope = gyroscope - gyroscope_offset - gyroscope_temperature_slope * np.mean(temperature)
+
+    return accelerometer, gyroscope
+
+
 def plot_data(accelerometer: np.ndarray,
               gyro: np.ndarray,
               sample_rate: int,
@@ -170,9 +217,9 @@ class Location3d:
     ]
 
     def __init__(self, sample_rate, init_r: R = None):
-        self.dt = 1/sample_rate
+        self.dt = 1 / sample_rate
         self.dim_x = len(Location3d.state_names)
-        init_state = [0]*self.dim_x
+        init_state = [0] * self.dim_x
         if init_r is None:
             init_r = R.identity()
         # We need an initial rotation quaternion and gravity
@@ -182,7 +229,8 @@ class Location3d:
 
     def add_measurement(self, accelerometer, gyroscope):
         # Unpack the last state
-        x_w, y_w, z_w, vx_w, vy_w, vz_w, ax_b, ay_b, az_b, qa_w, qb_w, qc_w, qd_w, wpi_b, wro_b, wya_b = self.state_history[-1]
+        x_w, y_w, z_w, vx_w, vy_w, vz_w, ax_b, ay_b, az_b, qa_w, qb_w, qc_w, qd_w, wpi_b, wro_b, wya_b = \
+            self.state_history[-1]
         # Get the measurements from the body
         ax_b, ay_b, az_b = accelerometer
         wpi_b, wro_b, wya_b = gyroscope
@@ -199,8 +247,6 @@ class Location3d:
 
         # Convert the acceleration in the body frame to the world frame
         rotation_w = R.from_quat([qa_w, qb_w, qc_w, qd_w])
-        # TODO don't know if this is inverse or not
-        # ax_w, ay_w, az_w = rotation_w.inv().apply(np.array([ax_b, ay_b, az_b]))
         ax_w, ay_w, az_w = rotation_w.apply(np.array([ax_b, ay_b, az_b]))
 
         # Update the linear velocity
@@ -238,7 +284,7 @@ class Location3d:
         if length == -1:
             mean_accelerometer = np.mean(accelerometer, axis=0)
         else:
-            mean_accelerometer = np.mean(accelerometer[:int(length*sample_rate)], axis=0)
+            mean_accelerometer = np.mean(accelerometer[:int(length * sample_rate)], axis=0)
         return Location3d.get_rotation_from_mean_accelerometer(mean_accelerometer)
 
     @staticmethod
@@ -248,16 +294,17 @@ class Location3d:
 
         def _get_error(c):
             pitch, roll = c
-            angle = R.from_euler('zyx', [0, pitch, roll], degrees=False)
+            angle = R.from_euler('xyz', [pitch, roll, 0], degrees=False)
             error = angle.apply(accelerometer_value) - [0, 0, magnitude]
             return np.linalg.norm(error)
 
-        res = optimize.differential_evolution(_get_error, [(-np.pi, np.pi), (-np.pi/2, np.pi/2)], tol=1e-5)
+        np.random.seed(52)
+        res = optimize.differential_evolution(_get_error, [(-np.pi, np.pi), (-np.pi / 2, np.pi / 2)], tol=1e-5)
         if res.success == False:
             raise RuntimeError('Failed to find the rotation')
         pitch, roll = res.x
         if as_rotation:
-            return R.from_euler('zyx', [0, pitch, roll], degrees=False)
+            return R.from_euler('xyz', [pitch, roll, 0], degrees=False)
         else:
             return pitch, roll
 
@@ -287,22 +334,25 @@ class UkfConfig:
 
     def __post_init__(self):
         if np.isscalar(self.R):
-            self.R = np.eye(self.measurement_n)*self.R
+            self.R = np.eye(self.measurement_n) * self.R
         if np.isscalar(self.Q):
-            self.Q = np.eye(self.state_n)*self.Q
+            self.Q = np.eye(self.state_n) * self.Q
         if np.isscalar(self.P):
-            self.P = np.eye(self.state_n)*self.P
+            self.P = np.eye(self.state_n) * self.P
 
 
 class Location3dUkf(Location3d):
+
     def __init__(self, sample_rate, config: UkfConfig) -> None:
         super().__init__(sample_rate, init_r=config.init_r)
 
         self.ukf = UnscentedKalmanFilter(
-            dim_x=self.dim_x, dim_z=6, dt=self.dt,
-            fx=Location3d.state_transition_function, hx=Location3dUkf.measurement_function,
-            points=MerweScaledSigmaPoints(self.dim_x, alpha=config.alpha, beta=config.beta, kappa=config.kappa)
-        )
+            dim_x=self.dim_x,
+            dim_z=6,
+            dt=self.dt,
+            fx=Location3d.state_transition_function,
+            hx=Location3dUkf.measurement_function,
+            points=MerweScaledSigmaPoints(self.dim_x, alpha=config.alpha, beta=config.beta, kappa=config.kappa))
 
         # Initial state
         self.ukf.x = self.state_history[0]
@@ -314,7 +364,6 @@ class Location3dUkf(Location3d):
     @staticmethod
     def measurement_function(x):
         # Extract state variables
-        # x_w, y_w, z_w, vx_w, vy_w, vz_w, ax_b, ay_b, az_b, pi_w, ro_w, ya_w, wpi_b, wro_b, wya_b = x
         x_w, y_w, z_w, vx_w, vy_w, vz_w, ax_b, ay_b, az_b, qa_w, qb_w, qc_w, qd_w, wpi_b, wro_b, wya_b = x
         # Measurement vector (z)
         return np.array([ax_b, ay_b, az_b, wpi_b, wro_b, wya_b])
@@ -383,11 +432,12 @@ def plot_rotations_on_sphere(pitch_list, roll_list, color_list):
     for pitch, roll in zip(pitch_list, roll_list):
         x_point, y_point, z_point = angles_to_cartesian(pitch, roll)
         line = go.Scatter3d(
-            x=[0, x_point], y=[0, y_point], z=[0, z_point],
+            x=[0, x_point],
+            y=[0, y_point],
+            z=[0, z_point],
             mode='lines',
             line=dict(width=2, color='black'),
-            showlegend=False
-        )
+            showlegend=False)
         points_x.append(x_point)
         points_y.append(y_point)
         points_z.append(z_point)
@@ -413,10 +463,7 @@ def find_largest_gap(pitch_list, roll_list) -> tuple[float, float, float]:
         tuple[float, float, float]: The pitch, roll, and yaw angles that fill in the largest gap.
     """
     # Calculate the pitch and roll list from the rotation object list
-    points = np.array([
-        angles_to_cartesian(pitch, roll)
-        for pitch, roll in zip(pitch_list, roll_list)
-    ])
+    points = np.array([angles_to_cartesian(pitch, roll) for pitch, roll in zip(pitch_list, roll_list)])
 
     def _get_loss(c):
         """ Calculate the loss, in search of the largest empty area defined by the new point at the center"""
@@ -424,9 +471,10 @@ def find_largest_gap(pitch_list, roll_list) -> tuple[float, float, float]:
         # Find the distance to the nearest point
         smallest_distance = np.min(np.linalg.norm(points - angles_to_cartesian(new_pitch, new_roll), axis=1))
         # We want to find the largest smallest distance, so I'm going to 1/smallest_distance for the loss function
-        return 1/smallest_distance
+        return 1 / smallest_distance
 
     # Minimize the loss function using differential evolution
-    res = optimize.differential_evolution(_get_loss, [(-np.pi, np.pi), (-np.pi/2, np.pi/2)], tol=1e-6)
+    np.random.seed(52)
+    res = optimize.differential_evolution(_get_loss, [(-np.pi, np.pi), (-np.pi / 2, np.pi / 2)], tol=1e-6)
     new_pitch, new_roll = res.x
     return new_pitch, new_roll
