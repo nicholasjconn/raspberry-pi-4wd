@@ -138,7 +138,7 @@ def apply_calibration(accelerometer: np.ndarray, gyroscope: np.ndarray, temperat
         accelerometer = accelerometer_sensitivity * (accelerometer - accelerometer_offset)
     elif accelerometer_sensitivity.shape == (3, 3):
         # Apply the calibration to the accelerometer data using matrix multiplication
-        accelerometer = accelerometer_sensitivity @ (accelerometer - accelerometer_offset)
+        accelerometer = (accelerometer_sensitivity @ (accelerometer - accelerometer_offset).T).T
     else:
         raise ValueError('Invalid accelerometer sensitivity')
 
@@ -146,7 +146,7 @@ def apply_calibration(accelerometer: np.ndarray, gyroscope: np.ndarray, temperat
     gyroscope_offset = np.array(calibration['gyroscope_offset'])
     gyroscope_temperature_slope = np.array(calibration['gyroscope_temperature_slope'])
     # TODO apply temperature on a sample-by-sample basis
-    gyroscope = gyroscope - gyroscope_offset - gyroscope_temperature_slope * np.mean(temperature)
+    gyroscope = gyroscope - gyroscope_offset - gyroscope_temperature_slope * (np.mean(temperature) - 25)
 
     return accelerometer, gyroscope
 
