@@ -56,7 +56,8 @@ def run_butter_filter(in_signal: np.ndarray,
 def read_data_file(file_path: str,
                    lowpass: Optional[float] = None,
                    radians: bool = True,
-                   settle_time: float = 2) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray], Optional[float]]:
+                   settle_time: float = 2,
+                   interpolate_temperature: bool = True) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray], Optional[float]]:
     """
     Read data from a JSON file and preprocess the accelerometer and gyroscope data.
 
@@ -65,6 +66,8 @@ def read_data_file(file_path: str,
         lowpass (Optional[float], optional): Lowpass filter cutoff frequency. Defaults to None.
         radians (bool, optional): If True, convert gyroscope data to radians. Defaults to True.
         settle_time (float, optional): Time in seconds to discard at the beginning of the data. Defaults to 2.
+        interpolate_temperature (bool, optional): If True, interpolate the temperature data to the accelerometer
+            sample rate. Defaults to True.
 
     Returns:
         Tuple[np.ndarray, np.ndarray, Optional[np.ndarray], Optional[float]]: Preprocessed accelerometer, gyroscope, and temperature data, and the temperature sample rate.
@@ -101,6 +104,12 @@ def read_data_file(file_path: str,
         temperature_sample_rate = data['temperature_sample_rate']
         temperature = temperature[int(temperature_sample_rate * settle_time):]
 
+        # Interpolate temperature data to accelerometer sample rate
+        if interpolate_temperature:
+            temperature = np.interp(np.arange(len(accelerometer)) / sample_rate,
+                                    np.arange(len(temperature)) / temperature_sample_rate, temperature)
+            temperature_sample_rate = sample_rate
+
     return accelerometer, gyroscope, sample_rate, temperature, temperature_sample_rate
 
 
@@ -125,6 +134,8 @@ def apply_calibration(accelerometer: np.ndarray, gyroscope: np.ndarray, temperat
         raise ValueError('Gyroscope calibration parameters not found')
     if 'gyroscope_temperature_slope' not in calibration:
         raise ValueError('Gyroscope calibration parameters not found')
+    if len(accelerometer) != len(gyroscope) != len(temperature):
+        raise ValueError('Accelerometer, gyroscope, and temperature data must have the same length')
 
     # Read in the calibration values, and check how to read in sensitivity (numpy vs float)
     if isinstance(calibration['accelerometer_sensitivity'], (float, np.floating)):
@@ -142,11 +153,14 @@ def apply_calibration(accelerometer: np.ndarray, gyroscope: np.ndarray, temperat
     else:
         raise ValueError('Invalid accelerometer sensitivity')
 
+    # If the temperature is only 1 dimension, expand it do 2 dimensions
+    if len(temperature.shape) == 1:
+        temperature = np.expand_dims(temperature, axis=1)
+
     # Apply gyroscope calibration
     gyroscope_offset = np.array(calibration['gyroscope_offset'])
     gyroscope_temperature_slope = np.array(calibration['gyroscope_temperature_slope'])
-    # TODO apply temperature on a sample-by-sample basis
-    gyroscope = gyroscope - gyroscope_offset - gyroscope_temperature_slope * (np.mean(temperature) - 25)
+    gyroscope = gyroscope - (gyroscope_temperature_slope * (temperature - 25) + gyroscope_offset)
 
     return accelerometer, gyroscope
 
@@ -279,13 +293,13 @@ class Location3d:
         return df
 
     @staticmethod
-    def initial_rotation_from_accelerometer(accelerometer, sample_rate, length=0.1):
+    def initial_rotation_from_accelerometer(accelerometer, sample_rate, length=0.1, as_rotation=True):
         # Assuming the robot is stationary, the acceleration vector should be pointing opposite to the gravity vector
         if length == -1:
             mean_accelerometer = np.mean(accelerometer, axis=0)
         else:
             mean_accelerometer = np.mean(accelerometer[:int(length * sample_rate)], axis=0)
-        return Location3d.get_rotation_from_mean_accelerometer(mean_accelerometer)
+        return Location3d.get_rotation_from_mean_accelerometer(mean_accelerometer, as_rotation=as_rotation)
 
     @staticmethod
     def get_rotation_from_mean_accelerometer(accelerometer_value, as_rotation=True):
